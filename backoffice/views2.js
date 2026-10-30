@@ -2,7 +2,7 @@
 /* Obra IA · Back office · Avances, Decisiones, Reportes, Costos, Equipo y Configuración. */
 
 /* ---------- avances: bandeja de revisión ---------- */
-const MK = { act: 'Actividad', pct: 'Avance', rend: 'Rendimiento' };
+const MK = { act: 'Actividad', pct: 'Avance', rend: 'Rendimiento', paro: 'Tiempo muerto' };
 const CONF = { alta: ['Lectura segura', 'ok'], media: ['Revisar', 'warn'], baja: ['Sin leer', 'bad'] };
 function hlText(text, spans) {
   let out = '', pos = 0;
@@ -40,6 +40,17 @@ function diaOptions(o, sel) {
   if (sel != null && !d0.includes(sel)) d0.push(sel);
   return d0.map(d => { const k = o.hoy - d; return `<option value="${d}"${d === sel ? ' selected' : ''}>${k === 0 ? 'Hoy' : k === 1 ? 'Ayer' : 'Hace ' + k + ' días hábiles'} · ${fmtDia(o, d)}</option>`; }).join('');
 }
+function paroBox(o, r, P) {
+  const p0 = P.paro, on = !!p0, causa = P.causa || 'equipo';
+  return `<div class="parobox"><label class="chk"><input type="checkbox" data-f="paroOn"${on ? ' checked' : ''}> Registrar tiempo muerto y bloqueo${on ? ' <span class="pill warn">Detectado en el mensaje</span>' : ''}</label>
+    <div class="grid4 paro-f"${on ? '' : ' hidden'}>
+      <label>Personas<input type="number" min="0" data-f="paroP" value="${p0 && p0.personas ? p0.personas : ''}"></label>
+      <label>Horas<input type="number" min="0" step="0.5" data-f="paroH" value="${p0 && p0.horas ? p0.horas : ''}"></label>
+      <label>Causa<select data-f="paroC">${Object.keys(BLQ_TIPOS).map(k => `<option value="${k}"${k === causa ? ' selected' : ''}>${BLQ_TIPOS[k]}</option>`).join('')}</select></label>
+      <label>Responsable<select data-f="paroR">${Object.keys(o.roles).map(k => `<option value="${k}"${k === BLQ_RESP[causa] ? ' selected' : ''}>${esc(o.roles[k])}</option>`).join('')}</select></label></div>
+    <label class="blk paro-f"${on ? '' : ' hidden'}>Qué está bloqueando<input type="text" data-f="paroT" value="${esc(bloqueoTitulo(r.texto))}"></label>
+    <p class="muted sm paro-f paro-sum"${on ? '' : ' hidden'}></p></div>`;
+}
 function repBody(o, r, a, P, dup) {
   const orig = r.corrige ? o.reportes.find(x => x.id === r.corrige) : null;
   return `<div class="rv-body">
@@ -55,6 +66,7 @@ function repBody(o, r, a, P, dup) {
       ${P.multi ? '<p class="warnbox">El mensaje parece hablar de más de una actividad. Confirma una y registra la otra por separado.</p>' : ''}
       ${dup ? '<p class="warnbox">Parece duplicado de un reporte ya registrado (misma actividad, avance y fecha). Descártalo si es el mismo.</p>' : ''}
       ${orig ? `<p class="infobox">Corrige el registro del ${fmtDia(o, orig.dia)} (${orig.pct}%). Al confirmar, el anterior queda como corregido y se conserva en el historial.</p>` : ''}
+      ${paroBox(o, r, P)}
       <p class="effect">${effectText(o, a, r.pct, r.rend, r.dia)}</p>
       <p class="muted sm cmp">${cmpText(o, a)}</p>
       <details class="hist"><summary>Registros de esta actividad</summary><div class="hbody">${histHtml(o, a)}</div></details></div>
@@ -72,9 +84,10 @@ function repRow(o, r, open) {
 function vAvances() {
   const o = cur(), pend = pendRep(o), hist = o.reportes.filter(r => r.estado !== 'pendiente').slice(0, 12);
   const openId = UI.openRid || (pend[0] && pend[0].id);
+  const seguros = pend.filter(r => { const P = parseMessage(o, r.texto); return P.conf === 'alta' && !P.paro && !dupOf(o, r) && r.actId && r.pct != null; }).length;
   const est = { confirmado: ['Confirmado', 'ok'], descartado: ['Descartado', 'mute'], corregido: ['Corregido', 'mute'] };
   return `<div class="cols avance">
-    <div><div class="card-h flat"><h2>Por revisar <span class="count">${pend.length}</span></h2><span class="muted sm">Abre un reporte para revisar lo que se registraría</span></div>
+    <div><div class="card-h flat"><h2>Por revisar <span class="count">${pend.length}</span></h2>${seguros ? `<button class="btn ghost sm" data-act="rep-confirm-all">Confirmar los ${seguros} de lectura segura</button>` : '<span class="muted sm">Abre un reporte para revisar lo que se registraría</span>'}</div>
       ${pend.length ? `<div class="bandeja">${pend.map(r => repRow(o, r, r.id === openId)).join('')}</div>` : '<div class="card"><p class="empty">No hay reportes por revisar. Cuando la obra escriba, aparecen aquí.</p></div>'}
     </div>
     <div>
@@ -120,6 +133,7 @@ function decDetail(o, al) {
       <div><small>Entrega proyectada</small><b>${fmtDiaY(o, o.planEnd + al.diasSin)}</b></div>
     </div>
     <p class="story">${al.diasSin ? `Hoy el atraso ${al.atraso >= 0.5 ? 'es de ' + (Math.round(al.atraso * 10) / 10).toString().replace('.', ',') + ' días' : 'casi no se ve'}, pero a este ritmo cada actividad de ${al.cap.toLowerCase()} toma más de lo planeado y el atraso se acumula: la entrega se mueve <b>${dias(al.diasSin)}</b>.` : `El ritmo está por debajo del plan, pero hay holgura: por ahora no mueve la fecha de entrega.`}</p>
+    ${al.diasSin ? `<p class="equiv"><b>Para dimensionarlo:</b> un mes adicional de una cuadrilla de 10 personas cuesta ${fmtM(10 * o.costoMensual)} brutos. Este atraso son ${(al.diasSin / 22).toFixed(1).replace('.', ',')} meses de obra y ${fmtM(al.diasSin * costDia(o))} con el costo diario configurado.</p>` : ''}
     <h3 class="sub">Evidencia</h3>
     ${ev.length ? `<ul class="evid">${ev.map(r => `<li><span class="mono">${fmtDia(o, r.dia)}</span><span>${actLink(o, r.actId)} · ${r.pct}% acumulado${r.rend ? ' · ' + r.rend + ' ' + o.acts.find(z => z.id === r.actId).und + '/día' : ''} · ${esc(r.autor.split(' · ')[0])}</span></li>`).join('')}</ul>` : '<p class="muted sm">Sin reportes confirmados de este capítulo.</p>'}
     <p class="muted sm">El ritmo sale de los reportes confirmados de ${al.cap.toLowerCase()}, comparados con el plan.</p>
@@ -195,6 +209,7 @@ function reportData(o) {
     av, ov, abiertas: als.filter(alertaAbierta), tomadas: als.filter(a => decisionTomada(a.dec)),
     vigilar: als.filter(a => a.sev === 'vigilar' && !decisionTomada(a.dec)),
     enRitmo: o.acts.filter(a => a.pct > 0 && a.pct < 0.999 && !als.some(x => x.cap === a.cap)).map(a => a.nombre),
+    bloq: bloqueosAbiertos(o).filter(b => !b.calc && b.reqDia <= o.hoy + 6), horasPerd: valor(o).prod.horasPerd, costoPerd: valor(o).prod.costoPerd,
     pend: pendRep(o), desact: fr.desact, eq: equipoPend(o), rot: rotacion(o), conf, por, fotos: conf.reduce((s, r) => s + (r.fotos || 0), 0)
   };
 }
@@ -213,6 +228,8 @@ function reportPaper(o) {
     ${d.tomadas.length ? `<h4>Decisiones</h4>${d.tomadas.map(a => `<div class="dec"><p><b>${a.cap}:</b> ${OPCT[a.dec.opcion]}. ${EST_DEC[a.dec.estado]}. Responsable: ${esc(quien(o, a.dec.responsable || 'director'))} · plazo ${fmtDiaY(o, (a.dec.decDia != null ? a.dec.decDia : o.hoy) + (a.dec.plazo != null ? a.dec.plazo : 5))}.${a.dec.verif ? ` Ritmo observado ${pctTxt(a.dec.verif.ritmo)}.` : ''}${a.dec.nota ? ' ' + esc(a.dec.nota) : ''}</p></div>`).join('')}` : ''}
     ${d.vigilar.length ? `<h4>Para vigilar</h4><ul>${d.vigilar.map(a => `<li>${a.cap}: ritmo al ${pctTxt(a.ritmo)} del plan, sin impacto fuerte todavía.</li>`).join('')}</ul>` : ''}
     ${d.enRitmo.length ? `<h4>En ritmo</h4><ul><li>${d.enRitmo.map(esc).join(', ')}.</li></ul>` : ''}
+    ${d.bloq.length ? `<h4>Bloqueos que se necesitan pronto</h4><ul>${d.bloq.map(b => `<li>${esc(b.titulo)} (${BLQ_TIPOS[b.tipo].toLowerCase()}), ${b.reqDia <= o.hoy ? 'ya se necesita' : 'en ' + dias(b.reqDia - o.hoy)}. Responsable: ${esc(quien(o, b.resp))}.</li>`).join('')}</ul>` : ''}
+    <h4>Tiempo muerto</h4><p>${d.horasPerd ? `${fmtH(d.horasPerd)} pagadas sin producir en los últimos 20 días hábiles (${fmtM(d.costoPerd)}).` : 'Sin tiempo muerto registrado en los últimos 20 días hábiles.'}</p>
     <h4>Datos pendientes</h4><ul><li>${d.pend.length} reporte${plural(d.pend.length, '', 's')} de obra sin confirmar.</li>${d.desact.length ? `<li>Dato desactualizado (más de 2 días sin reporte): ${d.desact.map(a => esc(a.nombre)).join(', ')}.</li>` : ''}<li>${d.eq.length} persona${plural(d.eq.length, '', 's')} con documentos pendientes o sin autorización de ingreso.</li>${o.planEstado === 'borrador' ? `<li>El plan v${o.planVer} está sin validar.</li>` : ''}${d.rot.rapidos ? `<li>${d.rot.rapidos} retiro${plural(d.rot.rapidos, '', 's')} antes de 5 días (${fmtCOP(d.rot.perdido)} de costo de ingreso perdido).</li>` : ''}</ul>
     <h4>Fuentes del avance</h4><p>${fuentesTxt(d)}</p>
     <p class="foot">Datos de ejemplo. Una persona revisa este reporte antes de enviarlo.</p>`;
@@ -226,6 +243,8 @@ function reportText(o) {
   if (d.tomadas.length) { L.push('DECISIONES'); d.tomadas.forEach(a => L.push(`- ${a.cap}: ${OPCT[a.dec.opcion]} · ${EST_DEC[a.dec.estado]} · responsable ${quien(o, a.dec.responsable || 'director')} · plazo ${fmtDiaY(o, (a.dec.decDia != null ? a.dec.decDia : o.hoy) + (a.dec.plazo != null ? a.dec.plazo : 5))}${a.dec.nota ? ' (' + a.dec.nota + ')' : ''}.`)); L.push(''); }
   if (d.vigilar.length) { L.push('PARA VIGILAR'); d.vigilar.forEach(a => L.push(`- ${a.cap}: ritmo ${pctTxt(a.ritmo)} del plan, sin impacto fuerte todavía.`)); L.push(''); }
   if (d.enRitmo.length) L.push('EN RITMO', '- ' + d.enRitmo.join(', '), '');
+  if (d.bloq.length) { L.push('BLOQUEOS QUE SE NECESITAN PRONTO'); d.bloq.forEach(b => L.push(`- ${b.titulo} (${BLQ_TIPOS[b.tipo]}), responsable ${quien(o, b.resp)}.`)); L.push(''); }
+  L.push('TIEMPO MUERTO', `- ${fmtH(d.horasPerd)} en los últimos 20 días hábiles (${fmtM(d.costoPerd)})`, '');
   L.push('DATOS PENDIENTES', `- Reportes sin confirmar: ${d.pend.length}`);
   if (d.desact.length) L.push(`- Dato desactualizado: ${d.desact.map(a => a.nombre).join(', ')}`);
   L.push(`- Personas con documentos pendientes o sin autorización: ${d.eq.length}`, '', 'FUENTES DEL AVANCE', '- ' + fuentesTxt(d));
@@ -242,13 +261,19 @@ function vReportes() {
 /* ---------- configuración ---------- */
 function vConfig() {
   const o = cur(), f = (k, l, step, hint) => `<label class="blk">${l}<input type="number" min="0" step="${step}" data-act-change="cfg" data-k="${k}" value="${o[k]}"><small>${hint}</small></label>`;
+  const fa = (k, l, step, hint) => `<label class="blk">${l}<input type="number" min="0" step="${step}" data-act-change="cfg-adm" data-k="${k}" value="${o.adm[k]}"><small>${hint}</small></label>`;
   return `<div class="cols cfg"><div>
       <div class="card"><h2>Parámetros de cálculo · ${esc(o.nombre)}</h2>
-        ${f('trabajadores', 'Trabajadores afectados por un atraso', 5, 'Los que seguirían en obra mientras se atrasa.')}${f('costoDia', 'Costo diario por trabajador ($)', 5000, 'Con prestaciones.')}${f('fijoDia', 'Costos fijos por día ($)', 250000, 'Campamento, vigilancia, equipos, interventoría.')}
+        ${f('trabajadores', 'Trabajadores afectados por un atraso', 5, 'Los que seguirían en obra mientras se atrasa.')}${f('costoMensual', 'Costo mensual total por persona ($)', 100000, 'Supuesto de ejemplo: 3 millones. De ahí salen el costo por día hábil (÷ 22) y por hora (÷ 176).')}${f('fijoDia', 'Costos fijos por día ($)', 250000, 'Campamento, vigilancia, equipos, interventoría.')}
         <p class="muted sm">Costo de un día de atraso: <b>${fmtCOP(costDia(o))}</b> = trabajadores × costo diario + costos fijos.</p>
         ${f('refuerzoBase', 'Costo base de reforzar una cuadrilla ($)', 500000, 'Valor inicial en las decisiones.')}
         <label class="blk">Ritmo que recupera un refuerzo (%)<input type="number" min="0" max="100" step="5" data-act-change="cfg-recover" value="${Math.round(recoverOf(o) * 100)}"><small>Supuesto de ejemplo, no un resultado comprobado. Cambia el efecto de reforzar en todas las decisiones.</small></label>
         ${f('costoIngreso', 'Costo de ingreso por persona ($)', 10000, 'Examen, curso de alturas, afiliaciones y prestaciones.')}</div>
+      <div class="card"><h2>Supuestos del valor</h2><p class="muted sm">Con estos números se estima el valor. Son supuestos de ejemplo que el piloto debe medir.</p>
+        ${f('paroEsperado', 'Días de paro que se esperan si un bloqueo no se resuelve a tiempo', 1, 'Se usa para estimar el paro evitado.')}
+        ${fa('minManual', 'Minutos para procesar un reporte a mano', 5, 'Hoy, sin Obra IA.')}${fa('minRevision', 'Minutos para revisar un reporte leído', 1, 'Con Obra IA.')}${fa('minCorreccion', 'Minutos por corrección', 1, 'Se descuentan del ahorro.')}
+        ${fa('informeManual', 'Minutos para armar el informe semanal a mano', 10, 'Hoy.')}${fa('informeRevision', 'Minutos para revisar el informe armado', 5, 'Con Obra IA.')}${fa('costoHora', 'Costo por hora de trabajo administrativo ($)', 1000, 'Residente o auxiliar.')}
+        ${f('plataformaMes', 'Plataforma por mes ($)', 500000, 'Sin precio definido: 0.')}${f('implementacion', 'Implementación, una sola vez ($)', 500000, 'Sin precio definido: 0.')}</div>
       <div class="card"><h2>Responsables</h2><p class="muted sm">Aparecen en las intervenciones, decisiones y reportes.</p>
         ${Object.keys(o.roles).map(k => `<label class="blk">${ROLES[k]}<input type="text" data-act-change="role" data-k="${k}" value="${esc(o.roles[k])}"></label>`).join('')}</div></div>
     <div>
@@ -263,5 +288,3 @@ function vConfig() {
       <div class="card"><h2>Controles de demo</h2><p class="muted sm">Para preparar una presentación.</p><div class="row"><button class="btn ghost" data-act="rep-simulate">Simular mensajes de la semana</button><button class="btn ghost" data-act="reset">Volver a los datos de ejemplo</button></div></div>
     </div></div>`;
 }
-
-const VIEWS = { obras: vObras, hoy: vHoy, plan: vPlan, avances: vAvances, decisiones: vDecisiones, reportes: vReportes, costos: vCostos, equipo: vEquipo, config: vConfig };

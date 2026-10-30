@@ -111,13 +111,28 @@ const ACT = {
   },
   'rep-simulate': () => { const o = cur(), n = simulateInbox(S, o); if (route() !== 'avances') location.hash = '#/avances'; commit(n ? 'Llegaron ' + n + ' mensajes de la obra (simulados).' : 'No hay actividades en curso para simular.'); },
   'rep-confirm': el => {
-    const o = cur(), card = el.closest('.rv'), r = o.reportes.find(x => x.id === el.dataset.id), v = cardVals(card);
-    if (!v.act) return toast('Elige la actividad antes de confirmar.');
-    if (v.pct === '' || isNaN(+v.pct) || +v.pct < 0 || +v.pct > 100) return toast('El avance debe estar entre 0 y 100.');
-    if (v.rend !== '' && (isNaN(+v.rend) || +v.rend < 0)) return toast('El rendimiento debe ser un número positivo.');
-    r.actId = v.act; r.pct = +v.pct; r.rend = v.rend === '' ? null : +v.rend; r.dia = +v.dia;
+    const o = cur(), card = el.closest('.rv'), r = o.reportes.find(x => x.id === el.dataset.id), v = cardVals(card), po = card.querySelector('[data-f=paroOn]'), paroOn = !!(po && po.checked);
+    const sinAvance = v.pct === '' && paroOn;
+    if (!v.act && !paroOn) return toast('Elige la actividad antes de confirmar.');
+    if (!sinAvance) {
+      if (!v.act) return toast('Elige la actividad antes de confirmar.');
+      if (v.pct === '' || isNaN(+v.pct) || +v.pct < 0 || +v.pct > 100) return toast('El avance debe estar entre 0 y 100.');
+      if (v.rend !== '' && (isNaN(+v.rend) || +v.rend < 0)) return toast('El rendimiento debe ser un número positivo.');
+    }
+    if (paroOn) {
+      const pe = +card.querySelector('[data-f=paroP]').value, ho = +card.querySelector('[data-f=paroH]').value, a = o.acts.find(z => z.id === v.act);
+      if (!a) return toast('Elige la actividad afectada por el tiempo muerto.');
+      if (!(pe > 0 && ho > 0)) return toast('Escribe las personas y las horas del tiempo muerto.');
+      registrarParo(S, o, { tipo: card.querySelector('[data-f=paroC]').value, cap: a.cap, actId: a.id, titulo: card.querySelector('[data-f=paroT]').value.trim() || 'Tiempo muerto', personas: pe, horas: ho, resp: card.querySelector('[data-f=paroR]').value, reqDia: +v.dia, dia: +v.dia, fuente: r.id });
+    }
+    r.actId = v.act || null; r.pct = sinAvance ? null : +v.pct; r.rend = v.rend === '' || sinAvance ? null : +v.rend; r.dia = +v.dia;
     applyReport(o, r); UI.openRid = null;
-    commit('Reporte confirmado. El plan y las decisiones se recalcularon.');
+    commit(paroOn ? 'Confirmado. Quedó registrado el tiempo muerto y su bloqueo.' : 'Reporte confirmado. El plan y las decisiones se recalcularon.');
+  },
+  'rep-confirm-all': () => {
+    const o = cur(); let n = 0;
+    for (const r of pendRep(o).slice()) { const P = parseMessage(o, r.texto); if (P.conf === 'alta' && !P.paro && !dupOf(o, r) && r.actId && r.pct != null) { applyReport(o, r); n++; } }
+    UI.openRid = null; commit(n ? 'Confirmé ' + n + ' reportes de lectura segura. El plan y las decisiones se recalcularon.' : 'No hay reportes de lectura segura para confirmar en bloque.');
   },
   'rep-discard': el => { const o = cur(); o.reportes.find(x => x.id === el.dataset.id).estado = 'descartado'; commit('Reporte descartado.'); },
   'rep-correct': el => {
@@ -131,7 +146,7 @@ const ACT = {
   'dec-decide': () => {
     const o = cur(), a = selAlert(o), d = ensureDec(o, a.cap);
     if (!d.opcion) return toast('Elige una opción antes de registrar la decisión.');
-    d.estado = 'decidida'; d.decDia = o.hoy; d.ritmoAntes = a.ritmo; d.responsable = d.responsable || 'director'; d.plazo = d.plazo != null ? d.plazo : 5;
+    d.estado = 'decidida'; d.decDia = o.hoy; d.ritmoAntes = a.ritmo; d.diasSinBase = a.diasSin; d.responsable = d.responsable || 'director'; d.plazo = d.plazo != null ? d.plazo : 5;
     note(o, 'Decisión: ' + OPCT[d.opcion] + '. Responsable: ' + quien(o, d.responsable) + '.', a.cap);
     commit('Decisión registrada. La entrega proyectada se recalculó.');
   },
@@ -148,6 +163,37 @@ const ACT = {
   },
   'dec-use-rec': () => { const o = cur(), a = selAlert(o), d = ensureDec(o, a.cap); if (!d.verif) return; o.recover = d.verif.rec; note(o, 'Supuesto de recuperación actualizado a ' + Math.round(d.verif.rec * 100) + '% con el resultado observado.', a.cap); commit('Supuesto de la obra actualizado.'); },
   'dec-reopen': () => { const o = cur(), a = selAlert(o), d = ensureDec(o, a.cap); d.estado = 'abierta'; delete d.verif; note(o, 'Decisión reabierta.', a.cap); commit('Decisión reabierta.'); },
+  'valor-tab': el => { UI.valorTab = el.dataset.t; render(); },
+  'calc-preset': el => { UI.calc = Object.assign({}, CALC_DEF, { costo: cur().costoMensual }, PRESETS[el.dataset.p].c); render(); },
+  'blq-new': () => {
+    const o = cur();
+    openDlg(`<h3>Registrar bloqueo</h3><p class="muted sm">Algo que impide o va a impedir que una cuadrilla trabaje.</p>
+      <label class="blk">Tipo<select id="bn-tipo">${Object.keys(BLQ_TIPOS).filter(k => k !== 'actividad_previa').map(k => `<option value="${k}">${BLQ_TIPOS[k]}</option>`).join('')}</select></label>
+      <label class="blk">Actividad afectada<select id="bn-act">${actOptions(o, '')}</select></label>
+      <label class="blk">Qué falta<input id="bn-tit" type="text" placeholder="Ej.: Plano de detalle sin aprobar"></label>
+      <label class="blk">Se necesita<select id="bn-req">${PLAZO_BLQ.map(([n, t]) => `<option value="${n}"${n === 3 ? ' selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label class="blk">Personas que quedarían sin trabajar<input id="bn-per" type="number" min="0" value="0"></label>
+      <label class="blk">Responsable<select id="bn-resp">${Object.keys(o.roles).map(k => `<option value="${k}"${k === BLQ_RESP.material ? ' selected' : ''}>${esc(o.roles[k])}</option>`).join('')}</select></label>
+      <div class="row end"><button class="btn ghost" data-act="dlg-close">Cancelar</button><button class="btn primary" data-act="blq-save">Registrar</button></div>`);
+    $('#bn-tipo').addEventListener('change', e => { $('#bn-resp').value = BLQ_RESP[e.target.value]; });
+  },
+  'blq-save': () => {
+    const o = cur(), a = o.acts.find(x => x.id === $('#bn-act').value), tit = $('#bn-tit').value.trim();
+    if (!a) return toast('Elige la actividad afectada.');
+    if (!tit) return toast('Escribe qué falta.');
+    const b = { id: 'b' + (S.seq++), tipo: $('#bn-tipo').value, cap: a.cap, actId: a.id, titulo: tit, detalle: '', resp: $('#bn-resp').value, reqDia: o.hoy + (+$('#bn-req').value), estado: 'abierto', creadoDia: o.hoy, personas: Math.max(0, +$('#bn-per').value || 0) };
+    o.bloqueos.unshift(b); closeDlg(); note(o, 'Bloqueo registrado: ' + tit + '.', a.cap); commit('Bloqueo registrado. Se ve en el look-ahead de ' + a.nombre + '.');
+  },
+  'blq-detail': el => { const o = cur(), b = o.bloqueos.find(x => x.id === el.dataset.id) || bloqueosCalculados(o).find(x => x.id === el.dataset.id); if (b) openDlg(blqDetail(o, b)); },
+  'blq-gestion': el => { const o = cur(), b = o.bloqueos.find(x => x.id === el.dataset.id), r = $('#bd-resp'); if (r) b.resp = r.value; b.estado = 'en_gestion'; closeDlg(); note(o, 'Bloqueo en gestión: ' + b.titulo + ' (' + quien(o, b.resp) + ').', b.cap); commit('En gestión con ' + quien(o, b.resp) + '.'); },
+  'blq-resolve': el => {
+    const o = cur(), b = o.bloqueos.find(x => x.id === el.dataset.id), r = $('#bd-resp'); if (r) b.resp = r.value;
+    b.estado = 'resuelto'; b.resueltoDia = o.hoy; closeDlg(); const aTiempo = b.resueltoDia <= b.reqDia && !o.paros.some(p => p.bloqueoId === b.id);
+    note(o, 'Bloqueo resuelto' + (aTiempo ? ' a tiempo' : ' tarde') + ': ' + b.titulo + '.', b.cap);
+    commit(aTiempo ? 'Resuelto a tiempo.' + (b.personas ? ' Se evitó un paro estimado de ' + fmtH(b.personas * 8 * o.paroEsperado) + ' (' + fmtM(b.personas * 8 * o.paroEsperado * costoHora(o)) + ').' : '') : 'Resuelto, pero después de que se necesitaba: hubo tiempo muerto.');
+  },
+  'blq-reopen': el => { const o = cur(), b = o.bloqueos.find(x => x.id === el.dataset.id); b.estado = 'abierto'; delete b.resueltoDia; closeDlg(); note(o, 'Bloqueo reabierto: ' + b.titulo + '.', b.cap); commit('Bloqueo reabierto.'); },
+  'scn-start': el => startTour(el.dataset.id),
   'pres-validate': () => { const o = cur(); o.presupuesto.forEach(l => l.estado = 'validado'); note(o, 'Presupuesto validado por el presupuestista.'); commit('Presupuesto validado.'); },
   'worker-new': () => {
     openDlg(`<h3>Registrar ingreso</h3>
@@ -198,6 +244,9 @@ const CHG = {
   'dec-plazo': t => { const o = cur(); ensureDec(o, selAlert(o).cap).plazo = +t.value; persist(); later(); },
   'pres-edit': t => { const o = cur(), l = o.presupuesto[+t.dataset.i], f = t.dataset.f; l[f] = Math.max(0, Math.round(+t.value || 0)) * 1e6; if (f === 'valor') l.estado = 'borrador'; persist(); later(); },
   'cfg-recover': t => { const o = cur(); o.recover = clamp((+t.value || 0) / 100, 0, 1); persist(); later(); },
+  contrato: t => { const o = cur(); o.contratos[t.dataset.k] = t.value; persist(); later(); },
+  hipotesis: t => { const o = cur(); o.hipotesis[t.dataset.k] = Math.max(0, +t.value || 0); persist(); later(); },
+  'cfg-adm': t => { const o = cur(); o.adm[t.dataset.k] = Math.max(0, +t.value || 0); persist(); later(); },
   cfg: t => { const o = cur(); o[t.dataset.k] = Math.max(0, +t.value || 0); persist(); later(); },
   role: t => { const o = cur(); o.roles[t.dataset.k] = t.value.trim() || ROLES[t.dataset.k]; persist(); }
 };
@@ -207,11 +256,24 @@ document.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === 
 document.addEventListener('input', e => {
   const t = e.target, d = t.dataset || {};
   if (d.actChange === 'dec-ref') CHG['dec-ref'](t);
+  else if (d.actInput === 'calc') {
+    const c = UI.calc = UI.calc || Object.assign({}, CALC_DEF, { costo: cur().costoMensual }), k = d.k;
+    if (k === 'fijo') { c.fijo = t.checked; render(); return; }
+    c[k] = Math.max(0, +t.value || 0);
+    const out = $('#calcOut'), tab = $('#calcTab'); if (out) out.innerHTML = calcOut(cur()); if (tab && k === 'costo') tab.innerHTML = calcTabla(cur());
+  }
+  else if (t.matches && t.matches('.rv [data-f=paroP], .rv [data-f=paroH]')) paroResumen(t.closest('.rv'));
   else if (d.actInput === 'plan-q') { UI.q = t.value; const o = cur(), rows = $('#planRows'); if (rows) rows.innerHTML = planRows(o); }
   else if (t.matches && t.matches('.rv [data-f=pct], .rv [data-f=rend]')) refreshEffect(t.closest('.rv'));
 });
+function paroResumen(card) {
+  const sum = card.querySelector('.paro-sum'), p = +card.querySelector('[data-f=paroP]').value, h = +card.querySelector('[data-f=paroH]').value;
+  if (sum) sum.textContent = p > 0 && h > 0 ? p + ' personas × ' + h + ' h = ' + fmtH(p * h) + ' ≈ ' + fmtM(p * h * costoHora(cur())) + ' pagados sin producir.' : 'Escribe las personas y las horas para ver el costo.';
+}
 document.addEventListener('change', e => {
   const t = e.target;
+  if (t.matches && t.matches('.rv [data-f=paroOn]')) { const card = t.closest('.rv'); card.querySelectorAll('.paro-f').forEach(x => x.hidden = !t.checked); paroResumen(card); return; }
+  if (t.matches && t.matches('.rv [data-f=paroC]')) { const card = t.closest('.rv'); card.querySelector('[data-f=paroR]').value = BLQ_RESP[t.value]; return; }
   if (t.matches && t.matches('.rv [data-f=act], .rv [data-f=dia]')) { refreshCard(t.closest('.rv')); return; }
   if (t.dataset.bind === 'obra') { S.obraId = t.value; UI.alertCap = null; persist(); render(); return; }
   const a = t.dataset.actChange; if (a && CHG[a]) CHG[a](t);

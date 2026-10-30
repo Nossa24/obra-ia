@@ -11,16 +11,20 @@ const ICON = {
   equipo: '<circle cx="9" cy="8" r="3.5"/><path d="M3 20c0-3.5 2.7-6 6-6s6 2.5 6 6M16 5a3.5 3.5 0 010 7M18 14c2 .8 3 2.800 3 6"/>',
   reportes: '<path d="M6 3h9l4 4v14H6z"/><path d="M14 3v5h5M9 13h7M9 17h7"/>',
   config: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/>',
+  bloqueos: '<rect x="5" y="10" width="14" height="10" rx="2"/><path d="M8 10V7a4 4 0 018 0v3"/>',
+  valor: '<path d="M4 18l5-6 4 3 7-9"/><path d="M15 6h5v5"/>',
   mas: '<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>'
 };
-const NAV_MAIN = [['hoy', 'Hoy'], ['plan', 'Plan'], ['avances', 'Avances'], ['decisiones', 'Decisiones'], ['reportes', 'Reportes']];
+const NAV_MAIN = [['hoy', 'Hoy'], ['plan', 'Plan'], ['avances', 'Avances'], ['bloqueos', 'Bloqueos'], ['decisiones', 'Decisiones'], ['valor', 'Valor'], ['reportes', 'Reportes']];
 const NAV_MORE = [['costos', 'Costos'], ['equipo', 'Equipo y documentos'], ['config', 'Configuración']];
 const TITLES = {
   obras: ['Obras', 'Todas tus obras de un vistazo'],
   hoy: ['Hoy', 'Lo que necesita tu atención en esta obra'],
   plan: ['Plan de obra', 'La programación completa, de la cimentación a la entrega'],
   avances: ['Avances', 'Lo que reporta la obra, revisado por una persona antes de contar'],
+  bloqueos: ['Bloqueos', 'Lo que impide trabajar, antes de que pare la cuadrilla'],
   decisiones: ['Decisiones', 'Del desvío a la decisión y a la comprobación del resultado'],
+  valor: ['Valor', 'Menos tiempos muertos, más productividad y mejor control del plazo'],
   reportes: ['Reportes', 'Lo que se presenta al comité, con su versión guardada'],
   costos: ['Costos', 'Presupuesto, valor ganado, gasto real y comprometido'],
   equipo: ['Equipo y documentos', 'Documentos al día y autorización de ingreso a la obra'],
@@ -58,11 +62,11 @@ function saveChip() {
 }
 function shell(route, body) {
   const o = cur();
-  const badges = { avances: pendRep(o).length, decisiones: computeAlerts(o).filter(alertaAbierta).length, equipo: equipoPend(o).length };
+  const badges = { avances: pendRep(o).length, bloqueos: bloqueosAbiertos(o).filter(b => b.reqDia <= o.hoy + 5).length, decisiones: computeAlerts(o).filter(alertaAbierta).length, equipo: equipoPend(o).length };
   const svg = id => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[id]}</svg>`;
   const link = ([id, l]) => `<a href="#/${id}" class="${route === id ? 'on' : ''}"${route === id ? ' aria-current="page"' : ''}>${svg(id)}<span>${l}</span>${badges[id] ? `<em aria-label="${badges[id]} pendientes">${badges[id]}</em>` : ''}</a>`;
   const [t, sub] = TITLES[route];
-  const moreActive = NAV_MORE.some(x => x[0] === route) || route === 'obras' || route === 'reportes';
+  const moreActive = NAV_MORE.some(x => x[0] === route) || ['obras', 'plan', 'valor', 'reportes'].includes(route);
   return `<aside class="side">
     <div class="brand"><i><svg viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M7 25h18M9.5 25V13.5L16 8.5l6.5 5V25" stroke="#FAFAFA" stroke-width="2.2" stroke-linejoin="round"/><circle cx="16" cy="17.5" r="3" fill="#E0FEA2"/></svg></i><span>Obra IA<small>Back office</small></span></div>
     <button class="tour-btn" data-act="tour-start"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7z"/></svg>Ver demo guiada</button>
@@ -79,9 +83,9 @@ function shell(route, body) {
       <div class="chips"><span class="chip">${esc(o.nombre)}</span><span class="chip mono">${semana(o)}</span><span class="chip mono" title="Las duraciones se miden en días hábiles (lunes a viernes) y los valores están en pesos colombianos">${corte(o)} · días hábiles · COP</span>${saveChip()}</div></header>
     <div class="content">${body}</div>
   </main>
-  <nav class="mnav" aria-label="Navegación principal">${NAV_MAIN.filter(x => x[0] !== 'reportes').map(([id, l]) => `<a href="#/${id}" class="${route === id ? 'on' : ''}">${svg(id)}<span>${l}</span>${badges[id] ? `<em>${badges[id]}</em>` : ''}</a>`).join('')}<button class="${moreActive || UI.sheet ? 'on' : ''}" data-act="sheet-toggle" aria-expanded="${!!UI.sheet}">${svg('mas')}<span>Más</span></button></nav>
+  <nav class="mnav" aria-label="Navegación principal">${NAV_MAIN.filter(x => ['hoy', 'avances', 'bloqueos', 'decisiones'].includes(x[0])).map(([id, l]) => `<a href="#/${id}" class="${route === id ? 'on' : ''}">${svg(id)}<span>${l}</span>${badges[id] ? `<em>${badges[id]}</em>` : ''}</a>`).join('')}<button class="${moreActive || UI.sheet ? 'on' : ''}" data-act="sheet-toggle" aria-expanded="${!!UI.sheet}">${svg('mas')}<span>Más</span></button></nav>
   <button class="fab" data-act="fab-capture" aria-label="Registrar un mensaje de la obra"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Mensaje</button>
-  ${UI.sheet ? `<div class="msheet" role="dialog" aria-label="Más secciones"><a href="#/obras">Obras</a><a href="#/reportes">Reportes</a>${NAV_MORE.map(([id, l]) => `<a href="#/${id}">${l}${badges[id] ? ` <em>${badges[id]}</em>` : ''}</a>`).join('')}<button data-act="tour-start">Ver demo guiada</button></div>` : ''}`;
+  ${UI.sheet ? `<div class="msheet" role="dialog" aria-label="Más secciones"><a href="#/obras">Obras</a><a href="#/plan">Plan</a><a href="#/valor">Valor</a><a href="#/reportes">Reportes</a>${NAV_MORE.map(([id, l]) => `<a href="#/${id}">${l}${badges[id] ? ` <em>${badges[id]}</em>` : ''}</a>`).join('')}<button data-act="tour-start">Ver demo guiada</button></div>` : ''}`;
 }
 
 /* ---------- obras (portafolio) ---------- */
@@ -113,6 +117,11 @@ function intervenciones(o) {
     else if (e === 'decidida') L.push({ p: 75, motivo: `${a.cap}: decisión tomada (${OPCT[d.opcion]}) que falta ejecutar.`, resp, accion: 'Marcar en ejecución.', ruta: 'decisiones', btn: 'Ejecutar', cap: a.cap });
     else if (e === 'ejecucion') L.push({ p: 65, motivo: `${a.cap}: ${OPCT[d.opcion]} en ejecución; falta comprobar el resultado.`, resp, accion: 'Registrar el ritmo observado.', ruta: 'decisiones', btn: 'Verificar', cap: a.cap });
   }
+  for (const b of bloqueosAbiertos(o)) {
+    if (b.calc || b.reqDia > o.hoy + 6) continue;
+    const dd = b.reqDia - o.hoy, act = o.acts.find(x => x.id === b.actId);
+    L.push({ p: 95 - Math.max(0, dd), motivo: `${BLQ_TIPOS[b.tipo]}: ${b.titulo}. ${dd <= 0 ? 'Ya se necesita.' : 'Se necesita en ' + dias(dd) + (act ? ' para ' + act.nombre : '') + '.'}`, resp: quien(o, b.resp), accion: b.estado === 'en_gestion' ? 'Confirmar la fecha de resolución.' : 'Asignar y resolver antes de que pare la cuadrilla.', ruta: 'bloqueos', btn: 'Resolver' });
+  }
   if (pend.length) L.push({ p: 80, motivo: `${pend.length} reporte${plural(pend.length, '', 's')} de obra por confirmar.`, resp: quien(o, 'residente'), accion: 'Revisar y confirmar para recalcular el plan.', ruta: 'avances', btn: 'Revisar' });
   if (fr.desact.length) L.push({ p: 70, motivo: `${fr.desact.length} actividad${plural(fr.desact.length, '', 'es')} en curso sin reporte hace más de 2 días: ${fr.desact.map(a => a.nombre).join(', ')}.`, resp: quien(o, 'residente'), accion: 'Pedir el reporte al contramaestro.', ruta: 'avances', btn: 'Ver avances' });
   if (eq.length) L.push({ p: 50, motivo: `${eq.length} persona${plural(eq.length, '', 's')} con documentos pendientes o sin autorización de ingreso.`, resp: quien(o, 'sst'), accion: 'Completar documentos o autorizar el ingreso.', ruta: 'equipo', btn: 'Revisar' });
@@ -136,6 +145,10 @@ function vHoy() {
   <h2 class="sec">Intervenciones de hoy</h2>
   ${top.length ? `<div class="ints">${top.map((i, k) => intCard(i, k + 1)).join('')}</div>` : '<div class="card"><p class="empty">Nada requiere intervención. Todo va según el plan.</p></div>'}
   ${rest.length ? `<details class="card more"><summary>${rest.length} pendiente${plural(rest.length, '', 's')} más</summary><div class="ints">${rest.map((i, k) => intCard(i, k + 4)).join('')}</div></details>` : ''}
+  <div class="cols srow"><div class="card"><div class="card-h"><h2>Avance contra el plan</h2><span class="muted sm">Curva S · datos de ejemplo</span></div>${chartS(o)}</div>
+    <div class="card"><h2>Ritmo por cuadrilla</h2>${chartRitmo(o)}</div></div>
+  <div class="cols duo"><div class="card"><div class="card-h"><h2>Tiempos muertos por causa</h2><a class="btn ghost sm" href="#/bloqueos">Ver bloqueos</a></div>${chartPareto(o)}</div>
+    <div class="card"><div class="card-h"><h2>Valor en esta obra</h2><a class="btn ghost sm" href="#/valor">Ver valor</a></div>${valorMini(o)}</div></div>
   <div class="card"><div class="card-h"><h2>Actividades en curso</h2><span class="muted sm">${fr.enCurso.length} activa${plural(fr.enCurso.length, '', 's')}</span></div>
     ${fr.enCurso.length ? `<div class="tbl-wrap"><table class="tbl"><thead><tr><th scope="col">Actividad</th><th scope="col">Cuadrilla</th><th scope="col" class="w140">Plan / real</th><th scope="col">Último reporte</th><th scope="col">Dato</th></tr></thead><tbody>
     ${fr.enCurso.map(a => { const u = a.ultimo != null ? a.ultimo : o._plan[a.id].ini, f = actFresca(o, a); return `<tr><td>${actLink(o, a.id)}<small>${a.cap}</small></td><td>${esc(a.crew)}</td><td>${pbar(planPctAct(o, a), a.pct)}<small class="mono">${pctTxt(planPctAct(o, a))} · ${pctTxt(a.pct)}</small></td><td class="mono">${fmtDia(o, u)}<small>hace ${dias(Math.max(0, o.hoy - u))}</small></td><td>${pill(f ? 'Al día' : 'Desactualizado', f ? 'ok' : 'warn')}</td></tr>`; }).join('')}
@@ -219,4 +232,9 @@ function actDetail(o, a) {
     ${al ? `<h4>Decisión relacionada</h4><p>${a.cap}: ritmo al ${pctTxt(al.ritmo)} del plan · ${pill(DEC[al.dec.estado || 'abierta'][0], DEC[al.dec.estado || 'abierta'][1])} <a href="#/decisiones" data-act="dlg-close" class="inl-link" data-cap="${a.cap}">Ver decisión</a></p>` : ''}
     <h4>Cambios</h4>${bit.length ? `<ul class="evid">${bit.map(b => `<li><span class="mono">${fmtDia(o, b.dia)}</span><span>${esc(b.texto)}</span></li>`).join('')}</ul>` : '<p class="muted sm">Sin cambios registrados.</p>'}
     <div class="row end"><button class="btn ghost" data-act="dlg-close">Cerrar</button><button class="btn primary" data-act="act-edit" data-id="${a.id}">Editar plan de esta actividad</button></div></div>`;
+}
+
+function valorMini(o) {
+  const x = valor(o), j = x.enJuego;
+  return `<ul class="vm"><li><span>Trabajo administrativo liberado</span><b>${fmtH(x.adm.horas)}</b></li><li><span>Paro evitado por bloqueos resueltos a tiempo</span><b>${fmtH(x.prod.horasEvit)}</b></li><li><span>${x.atraso.items.length ? 'Atraso evitado (neto de refuerzos)' : 'Atraso en juego si nada cambia'}</span><b>${x.atraso.items.length ? fmtM(x.atraso.neto) : dias(j.dias) + ' · ' + fmtM(j.costo)}</b></li></ul><p class="muted sm">Estimado con supuestos de ejemplo; no es un resultado medido.</p>`;
 }

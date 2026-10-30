@@ -2,7 +2,7 @@
 /* Obra IA · Back office · modelo de datos y cálculos.
    Todo es de ejemplo. El tiempo se mide en días hábiles desde el inicio de cada obra. */
 
-const VERSION = 3;
+const VERSION = 4;
 const LS_KEY = 'obraia-backoffice-v' + VERSION;
 const CAPS = ['Cimentación', 'Estructura', 'Mampostería', 'Instalaciones', 'Acabados', 'Fachada', 'Entrega'];
 const CREW = {
@@ -16,7 +16,7 @@ const BOSS = {
 };
 const RECOVER = 0.7; // parte del ritmo perdido que recupera reforzar la cuadrilla (supuesto de ejemplo, editable por obra)
 const recoverOf = o => (o.recover != null ? o.recover : RECOVER);
-const ROLES = { director: 'Director de obra', residente: 'Residente de obra', presupuestista: 'Presupuestista', sst: 'Coordinador SST', programador: 'Programador de obra' };
+const ROLES = { director: 'Director de obra', residente: 'Residente de obra', presupuestista: 'Presupuestista', sst: 'Coordinador SST', programador: 'Programador de obra', compras: 'Jefe de compras', diseno: 'Coordinador de diseño' };
 // ciclo de una decisión: propuesta (abierta / para comité) → decidida → en ejecución → verificada
 const decisionTomada = d => !!d && ['decidida', 'ejecucion', 'verificada'].includes(d.estado);
 const recuperaActiva = d => !!d && d.opcion === 'reforzar' && ['decidida', 'ejecucion'].includes(d.estado);
@@ -87,7 +87,9 @@ function avance(o, cap) {
   }
   return w ? { plan: pl / w, real: re / w } : { plan: 0, real: 0 };
 }
-const costDia = o => o.trabajadores * o.costoDia + o.fijoDia;
+// $3 millones mensuales por persona (supuesto): 22 días hábiles de 8 horas al mes
+const costoHora = o => o.costoMensual / 176;
+const costDia = o => o.trabajadores * (o.costoMensual / 22) + o.fijoDia;
 
 /* ---------- proyección con el ritmo real ---------- */
 function effRitmo(o, cap, raw) {
@@ -209,7 +211,23 @@ function parseMessage(o, text) {
   const nivs = new Set(); let nm; const lre = /(?:nivel|piso|planta)\s*(?:n[°o.]?\s*)?(\d{1,2})/g;
   while ((nm = lre.exec(t))) nivs.add(nm[1]);
   const multi = capsAll.length > 1 || nivs.size > 1;
-  return { actId, pct, rend, cap, amb, multi, prev, spans, conf: actId && pct != null ? (amb || multi ? 'media' : 'alta') : 'baja' };
+  const cues = {
+    material: /no llego (el |la |los |las )?(hierro|concreto|material|bloque|ladrillo|cemento|acero|arena|madera|pedido|despacho)|falta(n)? (el |la |los |las )?(hierro|concreto|material|bloque|ladrillo|cemento|acero|arena|madera)|sin (hierro|concreto|material|cemento)|retraso (del|de) (concreto|hierro|material)/,
+    equipo: /grua|equipo|maquina|vibrador|bomba|andamio|montacarga/,
+    instruccion: /plano|detalle|instruccion|aprobacion|consulta|calculista|diseno|rfi/,
+    personal: /falto(n)? (personal|gente|operarios)|sin (personal|gente)|no hay (gente|personal)|ausen/,
+    actividad_previa: /esperando (el )?(desencofrado|fundida|muros|losa|vaciado)|falta (terminar|desencofrar)/,
+    permiso: /permiso|licencia|cierre de via/
+  };
+  let causa = null;
+  for (const k of Object.keys(cues)) if (cues[k].test(t)) { causa = k; break; }
+  const paroCue = /(paramos|parados|paradas|parado|paro|detenid[oa]s?|sin trabajar|esperando|no pudimos trabajar)/.test(t);
+  let personas = null, horas = null, pm = t.match(/(\d+)\s*(personas|operarios|obreros|trabajadores|hombres|ayudantes)/);
+  if (pm) { personas = +pm[1]; spans.push({ k: 'paro', s: pm.index, e: pm.index + pm[0].length }); }
+  pm = t.match(/(\d+(?:[.,]\d+)?)\s*(horas|hrs|h)\b/);
+  if (pm) { horas = parseFloat(pm[1].replace(',', '.')); spans.push({ k: 'paro', s: pm.index, e: pm.index + pm[0].length }); }
+  const paro = paroCue && (personas || horas) ? { personas, horas, causa } : null;
+  return { actId, pct, rend, cap, amb, multi, prev, spans, paro, causa, conf: actId && pct != null ? (amb || multi ? 'media' : 'alta') : 'baja' };
 }
 function lastConfirmed(o, actId) {
   return o.reportes.filter(r => r.actId === actId && r.estado === 'confirmado').sort((x, y) => y.dia - x.dia)[0] || null;
@@ -238,6 +256,11 @@ function previewEdit(o, id, dur) {
   return { end, moved, delta: Math.round(end - o.planEnd) };
 }
 function applyReport(o, r) {
+  if (r.pct == null) { // mensaje sin avance (solo tiempo muerto)
+    r.estado = 'confirmado'; r.confirmadoDia = o.hoy;
+    o.bitacora.unshift({ dia: o.hoy, cap: null, texto: 'Reporte confirmado sin avance: solo tiempo muerto.' });
+    return true;
+  }
   const a = o.acts.find(x => x.id === r.actId);
   if (!a) return false;
   const dia = r.dia != null ? r.dia : o.hoy;
@@ -304,14 +327,106 @@ function rotacion(o) {
   return { retirados: ret.length, rapidos: rapidos.length, perdido: rapidos.length * o.costoIngreso };
 }
 
+/* ---------- bloqueos, tiempos muertos y valor ---------- */
+const BLQ_TIPOS = { material: 'Material', instruccion: 'Instrucción o diseño', equipo: 'Equipo', actividad_previa: 'Actividad previa', personal: 'Personal y documentos', permiso: 'Permiso o licencia' };
+const BLQ_RESP = { material: 'compras', instruccion: 'diseno', equipo: 'residente', actividad_previa: 'residente', personal: 'sst', permiso: 'director' };
+const avancePlanAt = (o, d) => { let w = 0, p = 0; for (const a of o.acts) { w += a.dur; p += a.dur * clamp((d - o._plan[a.id].ini) / a.dur, 0, 1); } return w ? p / w : 0; };
+const contratoDe = (o, cap) => (o.contratos && o.contratos[cap]) || 'directo';
+function costoParo(o, p) { return p.personas * p.horas * costoHora(o); }
+function bloqueosCalculados(o) {
+  const ov = overall(o), out = [];
+  for (const a of o.acts) {
+    if (a.pct > 0) continue;
+    const pl = o._plan[a.id];
+    if (pl.ini < o.hoy || pl.ini > o.hoy + 15) continue;
+    for (const p of a.preds) {
+      const pa = o.acts.find(x => x.id === p), pf = ov.m[p].fin;
+      if (pa.pct > 0 && pa.pct < 0.999 && pf > pl.ini + 0.5) out.push({ id: 'calc-' + a.id + '-' + p, calc: true, tipo: 'actividad_previa', cap: a.cap, actId: a.id, predId: p, titulo: a.nombre + ' no puede arrancar el ' + fmtDiaY(o, pl.ini) + ': ' + pa.nombre + ' termina el ' + fmtDiaY(o, pf), reqDia: pl.ini, retraso: Math.round(pf - pl.ini), resp: 'residente', estado: 'abierto', personas: 0 });
+    }
+  }
+  return out;
+}
+const bloqueosAbiertos = o => o.bloqueos.filter(b => b.estado !== 'resuelto').concat(bloqueosCalculados(o));
+function lookahead(o, dias) {
+  const lim = o.hoy + (dias || 15), bl = bloqueosAbiertos(o);
+  return o.acts.filter(a => a.pct < 0.999 && o._plan[a.id].ini <= lim && (o._plan[a.id].fin >= o.hoy)).map(a => {
+    const r = bl.filter(b => b.actId === a.id), vencida = r.some(b => b.reqDia <= o.hoy);
+    return { a, ini: o._plan[a.id].ini, restr: r, estado: !r.length ? 'liberada' : vencida ? 'bloqueada' : 'restriccion' };
+  }).sort((x, y) => x.ini - y.ini);
+}
+function serieS(o) {
+  const plan = [], W = o.totalSem;
+  for (let w = 0; w <= W; w++) plan.push([w * 5, avancePlanAt(o, w * 5)]);
+  const av = avance(o).real, real = o.serie.filter(p => p[0] < o.hoy).concat(o.hoy > 0 ? [[o.hoy, av]] : []);
+  const ov = overall(o), proy = o.hoy > 0 && av < 0.999 ? [[o.hoy, av], [o.planEnd + ov.dias, 1]] : [];
+  return { plan, real, proy };
+}
+function parosVentana(o, dias) { return o.paros.filter(p => p.dia >= o.hoy - (dias || 20)); }
+function valor(o) {
+  const w0 = o.hoy - 20, cd = costDia(o), ch = costoHora(o), A = o.adm, enW = r => r.dia != null && r.dia >= w0;
+  const conf = o.reportes.filter(r => r.estado === 'confirmado' && enW(r)).length + (A.previos || 0);
+  const corr = o.reportes.filter(r => r.estado === 'corregido' && enW(r)).length + (A.corrPrevios || 0);
+  const inf = (o.informes || []).filter(i => i.dia == null || i.dia >= w0).length + (A.informesPrevios || 0);
+  const horasAdm = Math.max(0, conf * (A.minManual - A.minRevision) / 60 - corr * A.minCorreccion / 60 + inf * (A.informeManual - A.informeRevision) / 60);
+  const adm = { conf, corr, inf, horas: horasAdm, valor: horasAdm * A.costoHora };
+  const paros = parosVentana(o, 20), porCausa = {}; let horasPerd = 0, costoPerd = 0, subPerd = 0;
+  for (const p of paros) { const h = p.personas * p.horas; horasPerd += h; porCausa[p.tipo] = (porCausa[p.tipo] || 0) + h; costoPerd += h * ch; if (contratoDe(o, p.cap) === 'precio_fijo') subPerd += h * ch; }
+  const evit = o.bloqueos.filter(b => b.estado === 'resuelto' && b.resueltoDia != null && b.resueltoDia <= b.reqDia && b.resueltoDia >= w0 && b.personas && !o.paros.some(p => p.bloqueoId === b.id));
+  let horasEvit = 0, evitSub = 0;
+  for (const b of evit) { const h = b.personas * 8 * o.paroEsperado; horasEvit += h; if (contratoDe(o, b.cap) === 'precio_fijo') evitSub += h; }
+  const prod = { horasPerd, costoPerd, subPerd, porCausa, horasEvit, evitN: evit.length, capDirecta: (horasEvit - evitSub) * ch, capSub: evitSub * ch, horasDirectas: horasEvit - evitSub, horasSub: evitSub };
+  const items = [];
+  for (const al of computeAlerts(o)) {
+    const d = al.dec;
+    if (!decisionTomada(d) || d.diasSinBase == null) continue;
+    const actual = d.estado === 'verificada' ? al.diasSin : (d.opcion === 'reforzar' ? al.diasRef : al.diasSin);
+    const dEv = Math.max(0, d.diasSinBase - actual), porDia = contratoDe(o, al.cap) === 'precio_fijo' ? o.fijoDia : cd;
+    const ref = d.opcion === 'reforzar' ? (d.costoRefuerzo != null ? d.costoRefuerzo : o.refuerzoBase) : 0;
+    items.push({ cap: al.cap, dias: dEv, bruto: dEv * porDia, refuerzo: ref, neto: dEv * porDia - ref, medido: d.estado === 'verificada', contrato: contratoDe(o, al.cap), opcion: d.opcion });
+  }
+  const atraso = { items, dias: items.reduce((x, i) => x + i.dias, 0), bruto: items.reduce((x, i) => x + i.bruto, 0), refuerzos: items.reduce((x, i) => x + i.refuerzo, 0) };
+  atraso.neto = atraso.bruto - atraso.refuerzos;
+  const plataforma = o.plataformaMes * 1 + o.implementacion; // un mes de piloto
+  const netoCaja = atraso.neto - plataforma;
+  const enJuego = overall(o);
+  return { w0, adm, prod, atraso, plataforma, netoCaja, enJuego };
+}
+function registrarParo(S, o, d) {
+  const dia = d.dia != null ? d.dia : o.hoy;
+  let b = d.bloqueoId ? o.bloqueos.find(x => x.id === d.bloqueoId) : null;
+  if (!b) {
+    b = { id: 'b' + (S.seq++), tipo: d.tipo, cap: d.cap, actId: d.actId || null, titulo: d.titulo, detalle: d.detalle || '', resp: d.resp || BLQ_RESP[d.tipo], reqDia: d.reqDia != null ? d.reqDia : dia, estado: 'en_gestion', creadoDia: dia, personas: d.personas, fuente: d.fuente || null };
+    o.bloqueos.unshift(b);
+  }
+  o.paros.unshift({ id: 'p' + (S.seq++), dia, cap: d.cap, bloqueoId: b.id, tipo: d.tipo, personas: d.personas, horas: d.horas });
+  o.bitacora.unshift({ dia: o.hoy, cap: d.cap, texto: 'Tiempo muerto registrado: ' + d.personas + ' personas × ' + d.horas + ' h (' + BLQ_TIPOS[d.tipo].toLowerCase() + ').' });
+  return b;
+}
+function bloqueoTitulo(texto) {
+  let t = texto.includes(':') ? texto.slice(texto.indexOf(':') + 1) : texto;
+  t = t.split(/[.!?]/)[0].trim();
+  if (!t) t = texto.trim();
+  t = t.charAt(0).toUpperCase() + t.slice(1);
+  return t.length > 90 ? t.slice(0, 87) + '…' : t;
+}
+function inyectarParo(S, o) {
+  const id = 'r' + (S.seq++);
+  o.reportes.unshift({ id, actId: 'EST-9', pct: 60, rend: 13, fuente: 'WhatsApp', fotos: 3, autor: BOSS['Estructura'], texto: 'Ing., paramos 8 personas 4 horas: la grúa torre sigue en mantenimiento y no llegó el técnico. Placa del 9 va en el 60%, sacamos 13 m2.', dia: o.hoy, hora: '10:20', estado: 'pendiente' });
+  return id;
+}
+
 /* ---------- datos de ejemplo ---------- */
 const PRES = [['Cimentación', .09], ['Estructura', .27], ['Mampostería', .12], ['Instalaciones', .17], ['Acabados', .22], ['Fachada', .07], ['Administración de obra', .06]];
 function buildObra(cfg, anchor) {
   const o = {
     id: cfg.id, nombre: cfg.nombre, tipo: cfg.tipo, pisos: cfg.pisos, unidades: cfg.unidades, planEstado: cfg.planEstado,
-    trabajadores: 60, costoDia: 100000, fijoDia: 4000000, refuerzoBase: 15000000, costoIngreso: 780000,
+    trabajadores: 60, costoMensual: 3000000, fijoDia: 4000000, refuerzoBase: 15000000, costoIngreso: 780000,
     acts: buildActs(cfg.pisos), ritmos: {}, decisiones: {}, reportes: [], bitacora: [], personal: [], presupuesto: [], hoy: 0,
-    planVer: 1, recover: RECOVER, roles: Object.assign({}, ROLES), informes: []
+    planVer: 1, recover: RECOVER, roles: Object.assign({}, ROLES), informes: [],
+    bloqueos: [], paros: [], serie: [], paroEsperado: 2, plataformaMes: 0, implementacion: 0,
+    adm: { minManual: 20, minRevision: 4, minCorreccion: 6, informeManual: 180, informeRevision: 20, costoHora: 30000, previos: 110, corrPrevios: 6, informesPrevios: 3 },
+    contratos: { 'Cimentación': 'directo', 'Estructura': 'directo', 'Mampostería': 'precio_fijo', 'Instalaciones': 'precio_fijo', 'Acabados': 'precio_fijo', 'Fachada': 'precio_fijo', 'Entrega': 'directo' },
+    hipotesis: { horasAdm: 40, horasEvit: 200, dias: 10 }
   };
   recompute(o);
   o.baseEnd = o.planEnd;
@@ -377,6 +492,34 @@ function seedAut(o) {
   }
 }
 const histBitacora = (o, hist) => hist.map(r => { const a = o.acts.find(x => x.id === r.actId); return { dia: r.dia, cap: a.cap, texto: 'Reporte confirmado: ' + a.nombre + ' al ' + r.pct + '%.' }; });
+function seedSerie(o) {
+  const W = Math.floor(o.hoy / 5), av = avance(o), k = av.plan > 0 ? 1 - av.real / av.plan : 0;
+  o.serie = [];
+  for (let w = 0; w < W; w++) o.serie.push([w * 5, avancePlanAt(o, w * 5) * (1 - k * Math.pow(w / Math.max(1, W), 2))]);
+}
+function seedValor(o, kind) {
+  const h = o.hoy, B = (id, tipo, cap, actId, titulo, resp, req, est, creado, personas, extra) => o.bloqueos.push(Object.assign({ id, tipo, cap, actId, titulo, detalle: '', resp, reqDia: req, estado: est, creadoDia: creado, personas }, extra || {}));
+  const P = (id, dia, cap, tipo, personas, horas, bloqueoId) => o.paros.push({ id, dia, cap, tipo, personas, horas, bloqueoId });
+  if (kind === 'norte') {
+    B('b1', 'material', 'Estructura', 'EST-11', 'Hierro de 1/2" del nivel 11 sin fecha de entrega confirmada', 'compras', 220, 'en_gestion', 203, 12, { detalle: 'El proveedor no ha confirmado el despacho. Se necesita para armar la placa del nivel 11.' });
+    B('b2', 'instruccion', 'Estructura', 'EST-10', 'Detalle de la rampa del nivel 10 pendiente de aprobación del calculista', 'diseno', 209, 'abierto', 204, 12, { detalle: 'La cuadrilla no puede armar el borde de la placa sin el detalle aprobado.' });
+    B('b3', 'equipo', 'Estructura', 'EST-9', 'Grúa torre en mantenimiento', 'residente', 201, 'resuelto', 200, 8, { resueltoDia: 202 });
+    B('b4', 'material', 'Estructura', 'EST-9', 'Retraso del concreto premezclado', 'compras', 196, 'resuelto', 196, 12, { resueltoDia: 197 });
+    B('b5', 'personal', 'Instalaciones', 'INS-6', '2 plomeros sin curso de alturas vigente', 'sst', 207, 'en_gestion', 203, 2, { detalle: 'No pueden entrar a trabajar en altura hasta renovar el curso.' });
+    B('b6', 'material', 'Mampostería', 'MAM-6', 'Bloque N.° 4 agotado: se pidió con anticipación', 'compras', 204, 'resuelto', 199, 6, { resueltoDia: 202 });
+    B('b7', 'instruccion', 'Estructura', 'EST-9', 'Detalle de vigas de borde aprobado antes de armar', 'diseno', 200, 'resuelto', 196, 12, { resueltoDia: 199 });
+    P('p1', 201, 'Estructura', 'equipo', 8, 4, 'b3'); P('p2', 202, 'Estructura', 'equipo', 8, 4, 'b3'); P('p3', 196, 'Estructura', 'material', 12, 3, 'b4');
+  } else if (kind === 'este') {
+    B('b1', 'permiso', 'Entrega', 'ENT', 'Certificado de ocupación pendiente de la visita de la curaduría', 'director', h + 5, 'en_gestion', h - 6, 0, { detalle: 'Visita agendada; faltan los planos récord firmados.' });
+    B('b2', 'material', 'Fachada', 'FAC', 'Sellante de juntas de fachada: pedido sin confirmar', 'compras', h + 1, 'abierto', h - 1, 6);
+    B('b3', 'equipo', 'Fachada', 'FAC', 'Andamio colgante con revisión vencida', 'residente', h - 8, 'resuelto', h - 12, 6, { resueltoDia: h - 10 });
+    P('p4', h - 9, 'Fachada', 'equipo', 6, 3, 'b3');
+  } else if (kind === 'sur') {
+    B('b1', 'permiso', 'Cimentación', 'CIM', 'Licencia de excavación sin radicar', 'director', 0, 'abierto', 0, 0, { detalle: 'La obra no puede arrancar sin la licencia de excavación.' });
+    B('b2', 'instruccion', 'Cimentación', 'CIM', 'Planos estructurales de cimentación sin aprobación del calculista', 'diseno', 0, 'en_gestion', 0, 0);
+  }
+  if (kind !== 'sur') seedSerie(o);
+}
 function seedState() {
   const anchor = isoOf(new Date());
   const S = { v: VERSION, anchor, obraId: 'norte', seq: 100, obras: [] };
@@ -411,6 +554,7 @@ function seedState() {
   este.bitacora = histBitacora(este, he);
 
   seedCostos(norte, rng(5)); seedCostos(este, rng(9)); seedAut(norte); seedAut(este);
+  seedValor(norte, 'norte'); seedValor(este, 'este'); seedValor(sur, 'sur');
   S.obras.push(norte, sur, este);
   return S;
 }
